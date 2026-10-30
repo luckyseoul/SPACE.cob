@@ -18,10 +18,9 @@ produces 735 samples of 16-bit mono audio, each one summed from the engines,
 the laser bursts and the explosions that are sounding at that instant. ffmpeg
 only encodes both streams.
 
-The whole film renders in a couple of minutes: run `./render.sh`. The
-[v1.0 release asset](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
-is the earlier cut — 73 seconds, no soundtrack — and is kept because it is the
-one people have linked to.
+The whole film: [space.mp4](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
+(1280×896, 30 fps, 100 s, with sound, 9.7 MB). Or render it yourself in a
+couple of minutes with `./render.sh`.
 
 ![The squadron, the cockpit, the strafing run, the aftermath](media/screenshot.png)
 
