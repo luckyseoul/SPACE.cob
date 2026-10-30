@@ -18,15 +18,17 @@ produces 735 samples of 16-bit mono audio, each one summed from the engines,
 the laser bursts and the explosions that are sounding at that instant. ffmpeg
 only encodes both streams.
 
-The whole film: [space.mp4](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
-(1280×896, 30 fps, 100 s).
+The whole film renders in a couple of minutes: run `./render.sh`. The
+[v1.0 release asset](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
+is the earlier cut — 73 seconds, no soundtrack — and is kept because it is the
+one people have linked to.
 
-![Dogfight, cockpit, strafing run, break-up](media/screenshot.png)
+![The squadron, the cockpit, the strafing run, the aftermath](media/screenshot.png)
 
 ## Requirements
 
 - [yaccc](https://github.com/luckyseoul/yaccc), which needs Python 3.11+ and gcc or clang
-- ffmpeg, and ffplay for live playback
+- ffmpeg, and ffplay for `play.sh` (which muxes the film before playing it)
 - numpy and scipy, only to regenerate `models.dat`
 
 ## Run
@@ -64,7 +66,7 @@ real time. Every run produces the same bytes.
 
 | File | |
 |---|---|
-| `space.cob` | the demo (free format COBOL, about 4,250 lines) |
+| `space.cob` | the demo (free format COBOL, about 4,250 lines, audio included) |
 | `font.cpy` | 41-glyph stroke font, copied into WORKING-STORAGE |
 | `models.dat` | ships, cruiser, planet and wreckage: parts, vertices, faces, engine glows |
 | `script.dat` | the choreography: spline keyframes, laser bursts, explosions |
@@ -110,15 +112,33 @@ real time. Every run produces the same bytes.
   through a `REDEFINES` (little-endian hosts, so x86-64 and ARM64). That is
   more than 100 times faster than a `COMPUTE` into a binary item, which goes
   through the decimal path. Sine and cosine come from a 4,096-entry table.
+  Adding the constant and truncating is what rounds. Subtracting 0.5 *before*
+  the add — to round to nearest rather than down — is what breaks, and only
+  when the value is already an integer: `x − 0.5` lands exactly on a tie, and
+  round-half-to-even then alternates. Passing 0, 1, 2, 3, 4 through it gives
+  0, 0, 2, 2, 4 rather than 0, 1, 2, 3, 4, so a one-pixel stroke loses every
+  other dot and a line's step comes out doubled. That is what turned the HUD
+  labels into hollow dotted boxes.
 
-## Note on yaccc
+## Notes on yaccc
 
-In yaccc, a `COMPUTE` that divides by a full-precision intrinsic result
-(`1 / FUNCTION SQRT(2)`, `1 / FUNCTION PI`) gives 0, whatever the receiving
-item. `cob_d_div` scales the dividend to 37 digits, but an irrational
-function result has 38 significant digits, so the integer quotient is 0. Exact
-results such as `SQRT(4)` are fine. `space.cob` computes the function into a
-COMP-2 item first and divides by that.
+Two compiler bugs turned up while making this, one now fixed and one open.
+
+**Division by an inexact intrinsic result — fixed.** `COMPUTE A = 1 / FUNCTION
+PI` used to give 0 in yaccc, because `cob_d_div` scaled the dividend to 37
+digits while an irrational function result carries 38, leaving an integer
+quotient of 0. Fixed upstream in
+[yaccc@2a20fae](https://github.com/luckyseoul/yaccc/commit/2a20fae) by
+rounding divisors of more than 19 significant digits; `tests/cases/divirr.cbl`
+there checks eight such divisions against `cobc`. `space.cob` still divides
+through a COMP-2 item rather than dividing by the function directly, so it also
+builds with the older compilers — `1 / A1` never needed the fix.
+
+**`**` does not compile — open.** `COMPUTE X = 2.718281828459045 ** (-Y * 3)`
+generates `pow()` in the C and never emits `#include <math.h>`, so the build
+fails with an implicit-declaration error rather than a wrong answer. The
+exponential envelopes here use `FUNCTION EXP` instead. Anything else that
+raises a value to a computed power will hit it.
 
 ## Credits
 
