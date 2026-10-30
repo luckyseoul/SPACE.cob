@@ -4170,6 +4170,18 @@ SCENE-8.
         MOVE 12 TO NEW-COL
         COMPUTE NEW-REVEAL = (SC-U - 2.0) * 60
         PERFORM ADD-TEXT
+    END-IF
+    *> the short film's own ending, restored: it holds while the wreck cools,
+    *> and the aftermath that follows is a coda rather than a continuation
+    IF SC-U > 5.8
+        MOVE "THE END" TO NEW-TEXT
+        MOVE 7 TO NEW-LEN
+        MOVE 3 TO NEW-SCALE
+        MOVE 52 TO NEW-TY
+        MOVE 207 TO NEW-COL
+        MOVE 119 TO NEW-GLOW
+        COMPUTE NEW-REVEAL = (SC-U - 5.8) * 30
+        PERFORM ADD-TEXT
     END-IF.
 
 *> ---------------------------------------------------------------------
@@ -4220,18 +4232,9 @@ SCENE-10.
     MOVE A3 TO FX-FADE
     MOVE 1 TO NEW-CENTER
     MOVE 0 TO NEW-GLOW
-    IF SC-U > 2.4
-        MOVE "THE END" TO NEW-TEXT
-        MOVE 7 TO NEW-LEN
-        MOVE 3 TO NEW-SCALE
-        MOVE 46 TO NEW-TY
-        MOVE 207 TO NEW-COL
-        MOVE 119 TO NEW-GLOW
-        COMPUTE NEW-REVEAL = (SC-U - 2.4) * 26
-        PERFORM ADD-TEXT
-        MOVE 0 TO NEW-GLOW
-    END-IF
-    IF SC-U > 4.6 AND SC-U < 8.6
+    *> the film has already said THE END over the cooling wreck; this card
+    *> closes on the title and the credits rather than repeating it
+    IF SC-U > 2.4 AND SC-U < 8.6
         MOVE "DATA DIVISION" TO NEW-TEXT
         MOVE 13 TO NEW-LEN
         MOVE 1.0 TO NEW-SCALE

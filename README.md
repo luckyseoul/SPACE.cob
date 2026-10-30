@@ -22,7 +22,7 @@ The whole film: [space.mp4](https://github.com/luckyseoul/SPACE.cob/releases/dow
 (1280×896, 30 fps, 100 s, with sound, 9.7 MB). Or render it yourself in a
 couple of minutes with `./render.sh`.
 
-![The squadron, the cockpit, the strafing run, the aftermath](media/screenshot.png)
+![The squadron, the cockpit, the strafing run, the ending](media/screenshot.png)
 
 ## Requirements
 
