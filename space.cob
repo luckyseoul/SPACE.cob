@@ -18,6 +18,8 @@
 *>  Environment: DEMO_START   first frame to emit (earlier frames are
 *>                            simulated but not drawn)
 *>               DEMO_FRAMES  number of frames to emit
+*>               DEMO_AUDIO   file to write the soundtrack to; when unset no
+*>                            audio is produced and only frames are emitted
 *> =====================================================================
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SPACE-COB.
@@ -33,6 +35,9 @@ FILE-CONTROL.
     SELECT SCRIPT-FILE ASSIGN TO "script.dat"
         ORGANIZATION IS LINE SEQUENTIAL
         FILE STATUS IS SCRIPT-STATUS.
+    SELECT AUDIO-FILE ASSIGN TO AUDIO-NAME
+        ORGANIZATION IS SEQUENTIAL
+        FILE STATUS IS AUDIO-STATUS.
 
 DATA DIVISION.
 FILE SECTION.
@@ -51,6 +56,12 @@ FD  MODEL-FILE.
 FD  SCRIPT-FILE.
 01  SCRIPT-REC                 PIC X(200).
 
+*> one mono 16-bit sample per write, appended to $DEMO_AUDIO if it is set.
+*> Bytes go out as two characters because SEQUENTIAL files hold text; the
+*> values are the little-endian halves of an S16 sample.
+FD  AUDIO-FILE.
+01  AUDIO-REC                  PIC X(2).
+
 WORKING-STORAGE SECTION.
 78  MAX-MESH                   VALUE 12.
 78  MAX-VERT                   VALUE 3600.
@@ -67,13 +78,61 @@ WORKING-STORAGE SECTION.
 78  MAX-DUST                   VALUE 70.
 78  MAX-TEXT                   VALUE 10.
 78  MAX-KEY                    VALUE 700.
-78  MAX-PATH                   VALUE 900.
+78  MAX-PATH                   VALUE 1100.
 78  MAX-BURST                  VALUE 100.
 78  MAX-BOOM                   VALUE 100.
 78  NGLYPH                     VALUE 41.
 
 *> ---------------------------------------------------------------- files
 01  MODEL-STATUS               PIC XX.
+*> ---------------------------------------------------------------- audio
+78  AUDIO-RATE                 VALUE 22050.
+01  AUDIO-NAME                 PIC X(200).
+01  AUDIO-ENV                  PIC X(200).
+01  AUDIO-STATUS               PIC XX.
+01  AUDIO-ON                   BINARY-LONG.
+01  AU-I                       BINARY-LONG.
+01  AU-N                       BINARY-LONG.
+01  AU-SAMPLE                  COMP-2.
+01  AU-MIX                     COMP-2.
+01  AU-AMP                     COMP-2.
+01  AU-FREQ                    COMP-2.
+01  AU-PHASE                   COMP-2.
+01  AU-PHASE2                  COMP-2.
+01  AU-NOISE                   COMP-2.
+01  AU-SHAPE                   COMP-2.
+01  AU-T                       COMP-2.
+01  AU-DUR                     COMP-2.
+01  AU-LOW                     BINARY-LONG.
+01  AU-HIGH                    BINARY-LONG.
+01  AU-WORD                    BINARY-SHORT.
+01  AU-BYTES REDEFINES AU-WORD.
+    05 AU-LO                  PIC X.
+    05 AU-HI                  PIC X.
+01  AU-SEED                    BINARY-LONG VALUE 12345.
+01  AU-PREV                    COMP-2.
+01  AU-CUT                     COMP-2.
+*> cues sounding during this frame, gathered once so the sample loop does
+*> not walk the whole script for every sample
+01  AU-CUES.
+    05 AU-CUE                  OCCURS 24.
+       10 AC-KIND             BINARY-LONG.
+       10 AC-T0               COMP-2.
+       10 AC-F                COMP-2.
+       10 AC-LEN              COMP-2.
+       10 AC-AMP              COMP-2.
+01  AU-NCUE                    BINARY-LONG.
+01  AU-C                       BINARY-LONG.
+01  AU-K                       BINARY-LONG.
+01  AU-S                       COMP-2.
+01  AU-S0                      COMP-2.
+01  AU-SCENE                   BINARY-LONG.
+01  AU-D                       COMP-2.
+01  AU-ENV                     COMP-2.
+01  AU-T0                      COMP-2.
+01  AU-K1                      COMP-2.
+01  AU-K2                      COMP-2.
+01  AU-D2                      COMP-2.
 01  SHOW-1                     PIC Z(5)9.
 01  SHOW-2                     PIC Z(5)9.
 01  SHOW-3                     PIC Z(5)9.
@@ -83,7 +142,7 @@ WORKING-STORAGE SECTION.
 
 *> ---------------------------------------------------------------- clock
 01  FRAME-NO                   BINARY-LONG.
-01  TOTAL-FRAMES               BINARY-LONG VALUE 2190.
+01  TOTAL-FRAMES               BINARY-LONG VALUE 3000.
 01  START-FRAME                BINARY-LONG VALUE 0.
 01  END-FRAME                  BINARY-LONG.
 01  ENV-TEXT                   PIC X(16).
@@ -663,7 +722,7 @@ COPY "font.cpy".
        10 KF-Z                 COMP-2.
        10 KF-ROLL              COMP-2.
 01  PATH-DIR.
-    05 PD-ENT                  OCCURS 900.
+    05 PD-ENT                  OCCURS 1100.
        10 PD-FIRST             BINARY-LONG.
        10 PD-COUNT             BINARY-LONG.
 01  BURST-COUNT                BINARY-LONG.
@@ -830,13 +889,267 @@ MAIN-LINE.
         COMPUTE NOW-T = FRAME-NO / 30
         PERFORM RUN-SCRIPT
         PERFORM UPDATE-EFFECTS
+        *> audio follows the frames that are emitted, not the simulation:
+        *> a partial render produces a partial soundtrack
+        IF AUDIO-ON = 1 AND FRAME-NO >= START-FRAME
+            PERFORM RENDER-AUDIO
+        END-IF
         IF FRAME-NO >= START-FRAME
             PERFORM RENDER-FRAME
             PERFORM EMIT-FRAME
         END-IF
     END-PERFORM
     CLOSE FRAME-FILE
+    IF AUDIO-ON = 1
+        CLOSE AUDIO-FILE
+    END-IF
     STOP RUN.
+
+*> =====================================================================
+*>  AUDIO - a mono 16-bit sample stream written beside the frames
+*>
+*>  There is no mixer and no buffer: every video frame synthesises its own
+*>  AUDIO-RATE/30 samples, each one summed from the effects that are sounding
+*>  at that instant. Everything is a function of NOW-T, so a run is a pure
+*>  function of the frame range and two renders produce the same bytes.
+*>
+*>  The cues follow the picture: engine drone under the ships, cannon fire on
+*>  the laser bursts the script already schedules, an impact on every boom,
+*>  a rising wind through the cockpit and the strafing run, and a low swell
+*>  under the end card.
+*> =====================================================================
+INIT-AUDIO.
+    MOVE SPACES TO AUDIO-ENV AUDIO-NAME
+    ACCEPT AUDIO-ENV FROM ENVIRONMENT "DEMO_AUDIO"
+    IF AUDIO-ENV = SPACES
+        MOVE 0 TO AUDIO-ON
+        EXIT PARAGRAPH
+    END-IF
+    MOVE AUDIO-ENV TO AUDIO-NAME
+    OPEN OUTPUT AUDIO-FILE
+    IF AUDIO-STATUS = "00"
+        MOVE 1 TO AUDIO-ON
+    ELSE
+        MOVE 0 TO AUDIO-ON
+    END-IF.
+
+*> one pseudorandom sample in [-1, 1), from the same generator the demo uses
+AU-RANDOM.
+    COMPUTE AU-SEED = FUNCTION MOD(AU-SEED * 1103515245 + 12345, 2147483648)
+    IF AU-SEED < 0
+        COMPUTE AU-SEED = AU-SEED + 2147483648
+    END-IF
+    COMPUTE AU-NOISE = AU-SEED / 1073741824 - 1.
+
+*> a band-limited-ish square: the two blended phases keep it from buzzing
+AU-OSC.
+    COMPUTE AU-PHASE = AU-PHASE + AU-FREQ / AUDIO-RATE
+    IF AU-PHASE >= 1
+        COMPUTE AU-PHASE = AU-PHASE - 1
+    END-IF
+    COMPUTE AU-PHASE2 = AU-PHASE2 + AU-FREQ * 1.004 / AUDIO-RATE
+    IF AU-PHASE2 >= 1
+        COMPUTE AU-PHASE2 = AU-PHASE2 - 1
+    END-IF
+    IF AU-PHASE < 0.5
+        MOVE 0.3 TO AU-SHAPE
+    ELSE
+        MOVE -0.3 TO AU-SHAPE
+    END-IF
+    IF AU-PHASE2 < 0.5
+        COMPUTE AU-SHAPE = AU-SHAPE - 0.18
+    ELSE
+        COMPUTE AU-SHAPE = AU-SHAPE + 0.18
+    END-IF.
+
+*> a one-pole low pass, so noise reads as a whoosh rather than a hiss
+AU-LOWPASS.
+    COMPUTE AU-CUT = AU-CUT + (AU-NOISE - AU-CUT) * 0.08.
+
+*> 30 ms attack, exponential tail: an impact
+AU-HIT.
+    IF AU-T < 0.03
+        COMPUTE AU-AMP = AU-T / 0.03
+    ELSE
+        COMPUTE AU-AMP = FUNCTION EXP(-(AU-T - 0.03) * 9)
+    END-IF.
+
+*> the sample loop for one video frame
+*> an absolute time for "scene-relative" script times
+AU-SCENE-T0.
+    EVALUATE AU-SCENE
+        WHEN 1 MOVE 0 TO AU-S0
+        WHEN 2 MOVE 6.5 TO AU-S0
+        WHEN 3 MOVE 12 TO AU-S0
+        WHEN 4 MOVE 26 TO AU-S0
+        WHEN 5 MOVE 32 TO AU-S0
+        WHEN 6 MOVE 40 TO AU-S0
+        WHEN 7 MOVE 51 TO AU-S0
+        WHEN 8 MOVE 63 TO AU-S0
+        WHEN 9 MOVE 73 TO AU-S0
+        WHEN OTHER MOVE 89 TO AU-S0
+    END-EVALUATE.
+
+*> gather the cues that overlap [NOW-T - DT, NOW-T]
+AU-GATHER.
+    MOVE 0 TO AU-NCUE
+    *> laser bursts: one tick per shot, a short bright zap
+    PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > BURST-COUNT
+        IF AU-NCUE < 24
+            MOVE BU-SCENE(AU-C) TO AU-SCENE
+            PERFORM AU-SCENE-T0
+            COMPUTE AU-T0 = AU-S0 + BU-T0(AU-C)
+            PERFORM VARYING AU-K FROM 1 BY 1 UNTIL AU-K > BU-COUNT(AU-C)
+                COMPUTE AU-S = AU-T0 + (AU-K - 1) * BU-GAP(AU-C)
+                IF AU-S > NOW-T - DT - 0.02 AND AU-S < NOW-T + 0.02
+                    IF AU-NCUE < 24
+                        ADD 1 TO AU-NCUE
+                        MOVE 1 TO AC-KIND(AU-NCUE)
+                        MOVE AU-S TO AC-T0(AU-NCUE)
+                        COMPUTE AC-F(AU-NCUE) = 1400 - 600 * (AU-K / BU-COUNT(AU-C))
+                        MOVE 0.09 TO AC-LEN(AU-NCUE)
+                        MOVE 0.30 TO AC-AMP(AU-NCUE)
+                    END-IF
+                END-IF
+            END-PERFORM
+        END-IF
+    END-PERFORM
+    *> explosions: a low thump plus a debris tail
+    PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > BOOM-COUNT
+        IF AU-NCUE < 24
+            MOVE BM-SCENE(AU-C) TO AU-SCENE
+            PERFORM AU-SCENE-T0
+            COMPUTE AU-T0 = AU-S0 + BM-T(AU-C)
+            IF AU-T0 > NOW-T - DT - 0.05 AND AU-T0 < NOW-T + 0.05
+                ADD 1 TO AU-NCUE
+                MOVE 2 TO AC-KIND(AU-NCUE)
+                MOVE AU-T0 TO AC-T0(AU-NCUE)
+                MOVE 46 TO AC-F(AU-NCUE)
+                COMPUTE AC-LEN(AU-NCUE) = 0.9 + BM-SIZE(AU-C) / 60
+                COMPUTE AC-AMP(AU-NCUE) = 0.35 + BM-SIZE(AU-C) / 140
+            END-IF
+        END-IF
+    END-PERFORM.
+
+*> the sample loop for one video frame
+RENDER-AUDIO.
+    PERFORM AU-GATHER
+    COMPUTE AU-N = AUDIO-RATE / 30
+    MOVE 0 TO AU-I
+    PERFORM UNTIL AU-I >= AU-N
+        COMPUTE AU-T = NOW-T - DT + AU-I / AUDIO-RATE
+        MOVE 0 TO AU-MIX
+
+        *> engine drone, two detuned partials, while the ships are flying
+        IF AU-T > 11.5 AND AU-T < 73
+            COMPUTE AU-AMP = 0.055 + 0.02 * FUNCTION SIN(AU-T * 0.55)
+            COMPUTE AU-MIX = AU-MIX + AU-AMP * FUNCTION SIN(AU-T * 261.63)
+            COMPUTE AU-MIX = AU-MIX + AU-AMP * 0.7 * FUNCTION SIN(AU-T * 392.00)
+            *> a cockpit whine, present only in scene 4
+            IF AU-T > 26 AND AU-T < 32
+                COMPUTE AU-MIX = AU-MIX + 0.035 * FUNCTION SIN(AU-T * 1200)
+                COMPUTE AU-MIX = AU-MIX + 0.02 * FUNCTION SIN(AU-T * 601)
+            END-IF
+        END-IF
+
+        *> the cues
+        PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > AU-NCUE
+            COMPUTE AU-D = AU-T - AC-T0(AU-C)
+            IF AU-D >= 0 AND AU-D < AC-LEN(AU-C)
+                IF AC-KIND(AU-C) = 1
+                    *> laser: descending whine with a fast decay
+                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 26)
+                    COMPUTE AU-FREQ = AC-F(AU-C) * (1 - AU-D * 1.8)
+                    COMPUTE AU-K1 = AC-AMP(AU-C) * AU-ENV
+                    COMPUTE AU-MIX = AU-MIX + AU-K1 * FUNCTION SIN(AU-T * AU-FREQ * 6.283185)
+                ELSE
+                    *> explosion: a body of noise over a falling sine
+                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 3.4)
+                    COMPUTE AU-FREQ = AC-F(AU-C) * (1 - AU-D * 0.55)
+                    IF AU-FREQ < 18
+                        MOVE 18 TO AU-FREQ
+                    END-IF
+                    PERFORM AU-RANDOM
+                    PERFORM AU-LOWPASS
+                    COMPUTE AU-K1 = AC-AMP(AU-C) * AU-ENV
+                    COMPUTE AU-K2 = 0.55 * AU-CUT + 0.45 * FUNCTION SIN(AU-T * AU-FREQ * 6.283185)
+                    COMPUTE AU-MIX = AU-MIX + AU-K1 * AU-K2
+                END-IF
+            END-IF
+        END-PERFORM
+
+        *> title: a pad that rises out of nothing, plus a thin air of noise
+        IF AU-T < 11.5
+            COMPUTE AU-ENV = AU-T / 6
+            IF AU-ENV > 1
+                COMPUTE AU-ENV = 1
+            END-IF
+            IF AU-T > 9
+                COMPUTE AU-ENV = AU-ENV * (11.5 - AU-T) / 2.5
+            END-IF
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.10 * FUNCTION SIN(AU-T * 65.41)
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.07 * FUNCTION SIN(AU-T * 98.00)
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.04 * FUNCTION SIN(AU-T * 130.81)
+            PERFORM AU-RANDOM
+            PERFORM AU-LOWPASS
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.05 * AU-CUT
+        END-IF
+
+        *> aftermath: a hollow bed, slowly beating, with debris ticking past
+        IF AU-T >= 73 AND AU-T < 89
+            COMPUTE AU-D = AU-T - 73
+            COMPUTE AU-ENV = AU-D / 2
+            IF AU-ENV > 1
+                COMPUTE AU-ENV = 1
+            END-IF
+            IF AU-D > 13
+                COMPUTE AU-ENV = AU-ENV * (16 - AU-D) / 3
+            END-IF
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.10 * FUNCTION SIN(AU-T * 43.65)
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.06 * FUNCTION SIN(AU-T * 43.90)
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.035 * FUNCTION SIN(AU-T * 87.31)
+            PERFORM AU-RANDOM
+            PERFORM AU-LOWPASS
+            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.045 * AU-CUT
+            *> debris ticking: a short tick twice a second, jittered
+            COMPUTE AU-K2 = FUNCTION MOD(AU-T * 22050, 11025)
+            IF AU-K2 < 40
+                COMPUTE AU-K1 = 1 - AU-K2 / 40
+                PERFORM AU-RANDOM
+                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.09 * AU-K1 * AU-NOISE
+            END-IF
+        END-IF
+
+        *> the end card: a slow swell that fades with the page
+        IF AU-T > 89
+            COMPUTE AU-D = AU-T - 89
+            IF AU-D < 11
+                COMPUTE AU-ENV = AU-D / 1.6
+                IF AU-ENV > 1
+                    COMPUTE AU-ENV = 1
+                END-IF
+                IF AU-D > 8
+                    COMPUTE AU-ENV = AU-ENV * (11 - AU-D) / 3
+                END-IF
+                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.05 * FUNCTION SIN(AU-T * 130.81)
+                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.04 * FUNCTION SIN(AU-T * 196.00)
+                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.03 * FUNCTION SIN(AU-T * 261.63)
+            END-IF
+        END-IF
+
+        *> soft clip, then to S16
+        IF AU-MIX > 0.95
+            MOVE 0.95 TO AU-MIX
+        END-IF
+        IF AU-MIX < -0.95
+            MOVE -0.95 TO AU-MIX
+        END-IF
+        COMPUTE AU-WORD = AU-MIX * 32767
+        MOVE AU-LO TO AUDIO-REC(1:1)
+        MOVE AU-HI TO AUDIO-REC(2:1)
+        WRITE AUDIO-REC
+        ADD 1 TO AU-I
+    END-PERFORM.
 
 *> =====================================================================
 *>  INITIALISATION
@@ -857,6 +1170,7 @@ INIT-ALL.
             MOVE TOTAL-FRAMES TO END-FRAME
         END-IF
     END-IF
+    PERFORM INIT-AUDIO
     PERFORM INIT-TABLES
     PERFORM BUILD-BASE-PALETTE
     PERFORM LOAD-MODELS
@@ -1959,7 +2273,7 @@ DRAW-LINE.
             MOVE LN-DY TO LN-LEN
         END-IF
     END-IF
-    COMPUTE MAGIC-D = LN-LEN + 0.5 + MAGIC-K
+    COMPUTE MAGIC-D = LN-LEN + MAGIC-K
     MOVE MAGIC-LO TO LN-N
     IF LN-N < 1
         MOVE 1 TO LN-N
@@ -1969,9 +2283,9 @@ DRAW-LINE.
     MOVE LN-AX TO LN-CX
     MOVE LN-AY TO LN-CY
     PERFORM VARYING LN-I FROM 0 BY 1 UNTIL LN-I > LN-N
-        COMPUTE MAGIC-D = LN-CX - 0.5 + MAGIC-K
+        COMPUTE MAGIC-D = LN-CX + MAGIC-K
         MOVE MAGIC-LO TO PL-X
-        COMPUTE MAGIC-D = LN-CY - 0.5 + MAGIC-K
+        COMPUTE MAGIC-D = LN-CY + MAGIC-K
         MOVE MAGIC-LO TO PL-Y
         PERFORM PLOT-DOT
         ADD LN-SX TO LN-CX
@@ -2999,9 +3313,15 @@ RUN-SCRIPT.
         WHEN NOW-T < 63
             MOVE 7 TO SC-SCENE
             MOVE 51 TO SC-T0
-        WHEN OTHER
+        WHEN NOW-T < 73
             MOVE 8 TO SC-SCENE
             MOVE 63 TO SC-T0
+        WHEN NOW-T < 89
+            MOVE 9 TO SC-SCENE
+            MOVE 73 TO SC-T0
+        WHEN OTHER
+            MOVE 10 TO SC-SCENE
+            MOVE 89 TO SC-T0
     END-EVALUATE
     COMPUTE SC-U = NOW-T - SC-T0
     EVALUATE SC-SCENE
@@ -3010,6 +3330,8 @@ RUN-SCRIPT.
         WHEN 3 MOVE 1 TO FRAME-KIND
         WHEN 4 MOVE 1 TO FRAME-KIND
         WHEN 8 MOVE 1 TO FRAME-KIND
+        WHEN 9 MOVE 2 TO FRAME-KIND
+        WHEN 10 MOVE 0 TO FRAME-KIND
         WHEN OTHER MOVE 2 TO FRAME-KIND
     END-EVALUATE
     IF SC-SCENE NOT = SC-LAST
@@ -3043,7 +3365,9 @@ RUN-SCRIPT.
         WHEN 5 PERFORM SCENE-5
         WHEN 6 PERFORM SCENE-6
         WHEN 7 PERFORM SCENE-7
-        WHEN OTHER PERFORM SCENE-8
+        WHEN 8 PERFORM SCENE-8
+        WHEN 9 PERFORM SCENE-9
+        WHEN OTHER PERFORM SCENE-10
     END-EVALUATE
     IF FX-SHAKE > 0
         PERFORM NEXT-RANDOM
@@ -3067,7 +3391,7 @@ SCENE-ENTER.
         END-IF
         MOVE 0 TO OB-HIDE(OI)
     END-PERFORM
-    IF SC-SCENE >= 5 AND SC-SCENE <= 7
+    IF (SC-SCENE >= 5 AND SC-SCENE <= 7) OR SC-SCENE = 9
         IF CR-SET = 0
             PERFORM SETUP-CRUISER
         END-IF
@@ -3080,6 +3404,11 @@ SCENE-ENTER.
         END-PERFORM
         MOVE LOW-VALUES TO PT-TAB
         MOVE 0 TO FX-FLASH FX-SHAKE
+    END-IF
+    IF SC-SCENE = 9
+        *> the two halves come back for the aftermath; they kept drifting
+        MOVE 1 TO OB-ACTIVE(12) OB-ACTIVE(13)
+        MOVE 1 TO OB-DRIFT(12) OB-DRIFT(13)
     END-IF
     IF SC-SCENE = 5 OR SC-SCENE = 3
         MOVE LOW-VALUES TO PT-TAB
@@ -3841,14 +4170,82 @@ SCENE-8.
         MOVE 12 TO NEW-COL
         COMPUTE NEW-REVEAL = (SC-U - 2.0) * 60
         PERFORM ADD-TEXT
-    END-IF
-    IF SC-U > 5.8
+    END-IF.
+
+*> ---------------------------------------------------------------------
+*>  9  aftermath: the wreck turns, the camera cranes around it
+*> ---------------------------------------------------------------------
+SCENE-9.
+    MOVE 0 TO HUD-ON
+    MOVE 1 TO DUST-ON
+    *> frame the two halves, wherever they have drifted to
+    COMPUTE A1 = (OB-PX(12) + OB-PX(13)) * 0.5
+    MOVE A1 TO CAM-TX
+    COMPUTE A1 = (OB-PY(12) + OB-PY(13)) * 0.5
+    MOVE A1 TO CAM-TY
+    COMPUTE A1 = (OB-PZ(12) + OB-PZ(13)) * 0.5
+    MOVE A1 TO CAM-TZ
+    *> a slow crane: quarter turn, pulling back the whole time
+    COMPUTE ANG = 1.05 + SC-U * 0.105
+    PERFORM SINCOS
+    COMPUTE A2 = 340 + SC-U * 20
+    COMPUTE CAM-PX = CAM-TX + SN * A2
+    COMPUTE CAM-PZ = CAM-TZ + CS * A2
+    COMPUTE CAM-PY = CAM-TY + 90 + SC-U * 5.5
+    *> up from black, hold, then away again
+    MOVE 0 TO A1
+    MOVE 1.8 TO A2
+    PERFORM SMOOTH-STEP
+    MOVE A3 TO FX-FADE
+    MOVE 13.0 TO A1
+    MOVE 16.0 TO A2
+    PERFORM SMOOTH-STEP
+    COMPUTE FX-FADE = FX-FADE * (1 - A3).
+
+*> ---------------------------------------------------------------------
+*>  10  end card: the giant, and the titles
+*> ---------------------------------------------------------------------
+SCENE-10.
+    MOVE 0 TO DUST-ON
+    MOVE 0 TO HUD-ON
+    COMPUTE CAM-PX = 140 + SC-U * 8
+    COMPUTE CAM-PY = 96 + SC-U * 2.2
+    COMPUTE CAM-PZ = -560 + SC-U * 15
+    COMPUTE CAM-TX = -9400 + SC-U * 62
+    MOVE 1800 TO CAM-TY
+    MOVE 10400 TO CAM-TZ
+    MOVE 0 TO A1
+    MOVE 1.4 TO A2
+    PERFORM SMOOTH-STEP
+    MOVE A3 TO FX-FADE
+    MOVE 1 TO NEW-CENTER
+    MOVE 0 TO NEW-GLOW
+    IF SC-U > 2.4
         MOVE "THE END" TO NEW-TEXT
         MOVE 7 TO NEW-LEN
         MOVE 3 TO NEW-SCALE
-        MOVE 52 TO NEW-TY
+        MOVE 46 TO NEW-TY
         MOVE 207 TO NEW-COL
         MOVE 119 TO NEW-GLOW
-        COMPUTE NEW-REVEAL = (SC-U - 5.8) * 30
+        COMPUTE NEW-REVEAL = (SC-U - 2.4) * 26
+        PERFORM ADD-TEXT
+        MOVE 0 TO NEW-GLOW
+    END-IF
+    IF SC-U > 4.6 AND SC-U < 8.6
+        MOVE "DATA DIVISION" TO NEW-TEXT
+        MOVE 13 TO NEW-LEN
+        MOVE 1.0 TO NEW-SCALE
+        MOVE 74 TO NEW-TY
+        MOVE 12 TO NEW-COL
+        COMPUTE NEW-REVEAL = (SC-U - 4.6) * 40
+        PERFORM ADD-TEXT
+    END-IF
+    IF SC-U > 5.6 AND SC-U < 8.6
+        MOVE "WRITTEN IN COBOL / YACCC" TO NEW-TEXT
+        MOVE 24 TO NEW-LEN
+        MOVE 1.0 TO NEW-SCALE
+        MOVE 86 TO NEW-TY
+        MOVE 88 TO NEW-COL
+        COMPUTE NEW-REVEAL = (SC-U - 5.6) * 130
         PERFORM ADD-TEXT
     END-IF.

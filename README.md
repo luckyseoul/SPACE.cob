@@ -1,20 +1,25 @@
 # SPACE.cob
 
-**DATA DIVISION**: a 73-second flat-shaded polygon space demo, written in
-COBOL and compiled with [yaccc](https://github.com/luckyseoul/yaccc).
+**DATA DIVISION**: a 100-second flat-shaded polygon space demo with a
+synthesised soundtrack, written in COBOL and compiled with
+[yaccc](https://github.com/luckyseoul/yaccc).
 
 ![The strafing run](media/preview.gif)
 
 A fighter squadron, a dogfight, a cockpit pass, a strafing run down the deck
-of a capital ship, and the ship coming apart, in the style of the 32X /
-Saturn era. There are no controls: it is a scripted attract-mode film.
+of a capital ship, the ship coming apart, an aftermath pass over the wreck,
+and an end card over the ringed giant — in the style of the 32X / Saturn era.
+There are no controls: it is a scripted attract-mode film.
 
 The program draws every frame itself (transform, clipping, lighting, polygon
 fill, sprites, particles, the HUD and the vector font) and writes raw frames
-to standard output. ffmpeg only encodes them.
+to standard output. It also synthesises its own soundtrack: every video frame
+produces 735 samples of 16-bit mono audio, each one summed from the engines,
+the laser bursts and the explosions that are sounding at that instant. ffmpeg
+only encodes both streams.
 
 The whole film: [space.mp4](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
-(1280×896, 30 fps, 7 MB).
+(1280×896, 30 fps, 100 s).
 
 ![Dogfight, cockpit, strafing run, break-up](media/screenshot.png)
 
@@ -38,20 +43,28 @@ By hand:
 
 ```
 yaccc space.cob
+DEMO_AUDIO=space.pcm ./space > /dev/null          # pass 1: the soundtrack
 ./space | ffmpeg -f rawvideo -pixel_format gbrp -video_size 320x224 \
-    -framerate 30 -i - space.mp4
+    -framerate 30 -i - -f s16le -ar 22050 -ac 1 -i space.pcm \
+    -c:v libx264 -crf 18 -c:a aac -shortest space.mp4
 ```
+
+Two passes, because ffmpeg has to see a complete file when it opens the audio
+input; the second pass re-simulates the film to pipe the frames, and produces
+the same bytes, which is what keeps the two streams in step. `render.sh` and
+`play.sh` do this for you.
 
 `DEMO_START` (first frame to output) and `DEMO_FRAMES` (how many) select a
 range; earlier frames are still simulated so particles and wreckage are where
-they should be. The full 2,190 frames render in about 23 seconds on one core,
-about three times faster than they play. Every run produces the same bytes.
+they should be, and the soundtrack covers exactly the frames emitted. The full
+3,000 frames take about 41 seconds to render on one core, about two fifths of
+real time. Every run produces the same bytes.
 
 ## Files
 
 | File | |
 |---|---|
-| `space.cob` | the demo (free format COBOL, about 3,850 lines) |
+| `space.cob` | the demo (free format COBOL, about 4,250 lines) |
 | `font.cpy` | 41-glyph stroke font, copied into WORKING-STORAGE |
 | `models.dat` | ships, cruiser, planet and wreckage: parts, vertices, faces, engine glows |
 | `script.dat` | the choreography: spline keyframes, laser bursts, explosions |
@@ -78,6 +91,16 @@ about three times faster than they play. Every run produces the same bytes.
   polygons, with a checkerboard dither for transparency. Sparks and laser
   bolts are clipped lines; debris is tumbling lit triangles; dust streaks with
   camera motion; the explosions flash the palette and shake the camera.
+- **Sound.** There is no mixer and no buffer. For every video frame the
+  program synthesises 735 samples (22,050 Hz mono, 16-bit) and appends them to
+  the file named by `DEMO_AUDIO`; frames still go to standard output. Each
+  sample sums whatever is sounding at that instant: an engine drone while the
+  ships fly, a cockpit whine during the cockpit pass, a descending zap per
+  laser shot, a noise body over a falling sine per explosion, a hollow beating
+  bed under the aftermath, and a swell under the end card. Envelopes are
+  `FUNCTION EXP`, so the whole track is a pure function of the frame clock —
+  two renders produce the same bytes, which is what makes a two-pass mux
+  (audio first, then frames) stay in sync.
 - **Motion.** Ships fly Catmull–Rom splines through the keyframes in
   `script.dat`, read with `UNSTRING` and `FUNCTION NUMVAL`, and bank into
   their turns from the path's lateral acceleration. Paths are defined in a
