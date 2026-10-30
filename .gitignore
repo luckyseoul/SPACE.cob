@@ -1,0 +1,6 @@
+# build output
+/space
+*.c
+*.mp4
+*.raw
+__pycache__/
