@@ -132,6 +132,9 @@ WORKING-STORAGE SECTION.
 01  AU-T0                      COMP-2.
 01  AU-K1                      COMP-2.
 01  AU-K2                      COMP-2.
+01  AU-S1                      COMP-2.
+01  AU-S2                      COMP-2.
+01  AU-PH                      COMP-2.
 01  AU-D2                      COMP-2.
 01  SHOW-1                     PIC Z(5)9.
 01  SHOW-2                     PIC Z(5)9.
@@ -913,10 +916,11 @@ MAIN-LINE.
 *>  at that instant. Everything is a function of NOW-T, so a run is a pure
 *>  function of the frame range and two renders produce the same bytes.
 *>
-*>  The cues follow the picture: engine drone under the ships, cannon fire on
-*>  the laser bursts the script already schedules, an impact on every boom,
-*>  a rising wind through the cockpit and the strafing run, and a low swell
-*>  under the end card.
+*>  Only the weapons sound: a cannon report on every laser burst the script
+*>  already schedules, and a sub-bass thump on every boom. There is no engine,
+*>  no ambience and no music, so the track is silent wherever nothing is being
+*>  fired. Both voices sit low -- 190 Hz falling to 90 Hz for the cannon, 22 Hz
+*>  for the blast -- with the noise component filtered to about 70 Hz.
 *> =====================================================================
 INIT-AUDIO.
     MOVE SPACES TO AUDIO-ENV AUDIO-NAME
@@ -964,7 +968,7 @@ AU-OSC.
 
 *> a one-pole low pass, so noise reads as a whoosh rather than a hiss
 AU-LOWPASS.
-    COMPUTE AU-CUT = AU-CUT + (AU-NOISE - AU-CUT) * 0.08.
+    COMPUTE AU-CUT = AU-CUT + (AU-NOISE - AU-CUT) * 0.02.
 
 *> 30 ms attack, exponential tail: an impact
 AU-HIT.
@@ -993,7 +997,7 @@ AU-SCENE-T0.
 *> gather the cues that overlap [NOW-T - DT, NOW-T]
 AU-GATHER.
     MOVE 0 TO AU-NCUE
-    *> laser bursts: one tick per shot, a short bright zap
+    *> laser bursts: one report per shot, low and short
     PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > BURST-COUNT
         IF AU-NCUE < 24
             MOVE BU-SCENE(AU-C) TO AU-SCENE
@@ -1006,15 +1010,17 @@ AU-GATHER.
                         ADD 1 TO AU-NCUE
                         MOVE 1 TO AC-KIND(AU-NCUE)
                         MOVE AU-S TO AC-T0(AU-NCUE)
-                        COMPUTE AC-F(AU-NCUE) = 1400 - 600 * (AU-K / BU-COUNT(AU-C))
-                        MOVE 0.09 TO AC-LEN(AU-NCUE)
-                        MOVE 0.30 TO AC-AMP(AU-NCUE)
+                        *> 320 Hz falling to 150 across a burst. The old
+                        *> 1,400 Hz read as a hiss; this reads as a gun.
+                        COMPUTE AC-F(AU-NCUE) = 190 - 100 * (AU-K / BU-COUNT(AU-C))
+                        MOVE 0.16 TO AC-LEN(AU-NCUE)
+                        MOVE 0.42 TO AC-AMP(AU-NCUE)
                     END-IF
                 END-IF
             END-PERFORM
         END-IF
     END-PERFORM
-    *> explosions: a low thump plus a debris tail
+    *> explosions: a sub-bass thump plus a debris tail
     PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > BOOM-COUNT
         IF AU-NCUE < 24
             MOVE BM-SCENE(AU-C) TO AU-SCENE
@@ -1024,7 +1030,7 @@ AU-GATHER.
                 ADD 1 TO AU-NCUE
                 MOVE 2 TO AC-KIND(AU-NCUE)
                 MOVE AU-T0 TO AC-T0(AU-NCUE)
-                MOVE 46 TO AC-F(AU-NCUE)
+                MOVE 22 TO AC-F(AU-NCUE)
                 COMPUTE AC-LEN(AU-NCUE) = 0.9 + BM-SIZE(AU-C) / 60
                 COMPUTE AC-AMP(AU-NCUE) = 0.35 + BM-SIZE(AU-C) / 140
             END-IF
@@ -1040,109 +1046,56 @@ RENDER-AUDIO.
         COMPUTE AU-T = NOW-T - DT + AU-I / AUDIO-RATE
         MOVE 0 TO AU-MIX
 
-        *> engine drone, two detuned partials, while the ships are flying
-        IF AU-T > 11.5 AND AU-T < 73
-            COMPUTE AU-AMP = 0.055 + 0.02 * FUNCTION SIN(AU-T * 0.55)
-            COMPUTE AU-MIX = AU-MIX + AU-AMP * FUNCTION SIN(AU-T * 261.63)
-            COMPUTE AU-MIX = AU-MIX + AU-AMP * 0.7 * FUNCTION SIN(AU-T * 392.00)
-            *> a cockpit whine, present only in scene 4
-            IF AU-T > 26 AND AU-T < 32
-                COMPUTE AU-MIX = AU-MIX + 0.035 * FUNCTION SIN(AU-T * 1200)
-                COMPUTE AU-MIX = AU-MIX + 0.02 * FUNCTION SIN(AU-T * 601)
-            END-IF
-        END-IF
-
-        *> the cues
+        *> weapons only: no engines, no ambience, nothing that plays under
+        *> the picture. Each cue is a gun or a blast and nothing else.
+        *>
+        *> Phase is integrated from the cue's own onset, not taken from
+        *> absolute time: a falling pitch written as SIN(t * f(t)) has an
+        *> instantaneous frequency of f + t*f', which at 14 seconds is tens of
+        *> kHz below zero -- aliasing, which reads as hiss. Integrating
+        *> f0*(d - k*d*d/2) gives the sweep it was meant to be.
         PERFORM VARYING AU-C FROM 1 BY 1 UNTIL AU-C > AU-NCUE
             COMPUTE AU-D = AU-T - AC-T0(AU-C)
             IF AU-D >= 0 AND AU-D < AC-LEN(AU-C)
                 IF AC-KIND(AU-C) = 1
-                    *> laser: descending whine with a fast decay
-                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 26)
-                    COMPUTE AU-FREQ = AC-F(AU-C) * (1 - AU-D * 1.8)
+                    *> cannon: a deep report that drops in pitch as it dies
+                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 17)
+                    COMPUTE AU-PH = AC-F(AU-C) * (AU-D - 1.3 * AU-D * AU-D)
+                    COMPUTE AU-S1 = FUNCTION SIN(AU-PH * 6.283185)
+                    COMPUTE AU-S2 = FUNCTION SIN(AU-PH * 3.141592)
                     COMPUTE AU-K1 = AC-AMP(AU-C) * AU-ENV
-                    COMPUTE AU-MIX = AU-MIX + AU-K1 * FUNCTION SIN(AU-T * AU-FREQ * 6.283185)
-                ELSE
-                    *> explosion: a body of noise over a falling sine
-                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 3.4)
-                    COMPUTE AU-FREQ = AC-F(AU-C) * (1 - AU-D * 0.55)
-                    IF AU-FREQ < 18
-                        MOVE 18 TO AU-FREQ
+                    COMPUTE AU-MIX = AU-MIX + AU-K1 * AU-S1
+                    COMPUTE AU-MIX = AU-MIX + AU-K1 * 0.55 * AU-S2
+                    *> a filtered crack on the leading edge, weight under 800 Hz
+                    IF AU-D < 0.05
+                        PERFORM AU-RANDOM
+                        PERFORM AU-LOWPASS
+                        COMPUTE AU-MIX = AU-MIX
+                            + AU-K1 * 0.9 * (1 - AU-D / 0.05) * AU-CUT
                     END-IF
+                ELSE
+                    *> blast: a sub-bass thump under a body of dark noise
+                    COMPUTE AU-ENV = FUNCTION EXP(-AU-D * 2.4)
+                    COMPUTE AU-PH = AC-F(AU-C) * (AU-D - 0.25 * AU-D * AU-D)
+                    COMPUTE AU-S1 = FUNCTION SIN(AU-PH * 6.283185)
+                    COMPUTE AU-S2 = FUNCTION SIN(AU-PH * 3.141592)
                     PERFORM AU-RANDOM
                     PERFORM AU-LOWPASS
                     COMPUTE AU-K1 = AC-AMP(AU-C) * AU-ENV
-                    COMPUTE AU-K2 = 0.55 * AU-CUT + 0.45 * FUNCTION SIN(AU-T * AU-FREQ * 6.283185)
+                    COMPUTE AU-K2 = 0.4 * AU-CUT + 0.6 * AU-S1
                     COMPUTE AU-MIX = AU-MIX + AU-K1 * AU-K2
+                    COMPUTE AU-MIX = AU-MIX + AU-K1 * 0.5 * AU-S2
                 END-IF
             END-IF
         END-PERFORM
 
-        *> title: a pad that rises out of nothing, plus a thin air of noise
-        IF AU-T < 11.5
-            COMPUTE AU-ENV = AU-T / 6
-            IF AU-ENV > 1
-                COMPUTE AU-ENV = 1
-            END-IF
-            IF AU-T > 9
-                COMPUTE AU-ENV = AU-ENV * (11.5 - AU-T) / 2.5
-            END-IF
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.10 * FUNCTION SIN(AU-T * 65.41)
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.07 * FUNCTION SIN(AU-T * 98.00)
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.04 * FUNCTION SIN(AU-T * 130.81)
-            PERFORM AU-RANDOM
-            PERFORM AU-LOWPASS
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.05 * AU-CUT
+        *> soft clip, then to S16. Clipping adds harmonics, so the mix is
+        *> kept clear of the rails: a clipped 26 Hz sine measures as bright.
+        IF AU-MIX > 0.72
+            MOVE 0.72 TO AU-MIX
         END-IF
-
-        *> aftermath: a hollow bed, slowly beating, with debris ticking past
-        IF AU-T >= 73 AND AU-T < 89
-            COMPUTE AU-D = AU-T - 73
-            COMPUTE AU-ENV = AU-D / 2
-            IF AU-ENV > 1
-                COMPUTE AU-ENV = 1
-            END-IF
-            IF AU-D > 13
-                COMPUTE AU-ENV = AU-ENV * (16 - AU-D) / 3
-            END-IF
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.10 * FUNCTION SIN(AU-T * 43.65)
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.06 * FUNCTION SIN(AU-T * 43.90)
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.035 * FUNCTION SIN(AU-T * 87.31)
-            PERFORM AU-RANDOM
-            PERFORM AU-LOWPASS
-            COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.045 * AU-CUT
-            *> debris ticking: a short tick twice a second, jittered
-            COMPUTE AU-K2 = FUNCTION MOD(AU-T * 22050, 11025)
-            IF AU-K2 < 40
-                COMPUTE AU-K1 = 1 - AU-K2 / 40
-                PERFORM AU-RANDOM
-                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.09 * AU-K1 * AU-NOISE
-            END-IF
-        END-IF
-
-        *> the end card: a slow swell that fades with the page
-        IF AU-T > 89
-            COMPUTE AU-D = AU-T - 89
-            IF AU-D < 11
-                COMPUTE AU-ENV = AU-D / 1.6
-                IF AU-ENV > 1
-                    COMPUTE AU-ENV = 1
-                END-IF
-                IF AU-D > 8
-                    COMPUTE AU-ENV = AU-ENV * (11 - AU-D) / 3
-                END-IF
-                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.05 * FUNCTION SIN(AU-T * 130.81)
-                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.04 * FUNCTION SIN(AU-T * 196.00)
-                COMPUTE AU-MIX = AU-MIX + AU-ENV * 0.03 * FUNCTION SIN(AU-T * 261.63)
-            END-IF
-        END-IF
-
-        *> soft clip, then to S16
-        IF AU-MIX > 0.95
-            MOVE 0.95 TO AU-MIX
-        END-IF
-        IF AU-MIX < -0.95
-            MOVE -0.95 TO AU-MIX
+        IF AU-MIX < -0.72
+            MOVE -0.72 TO AU-MIX
         END-IF
         COMPUTE AU-WORD = AU-MIX * 32767
         MOVE AU-LO TO AUDIO-REC(1:1)

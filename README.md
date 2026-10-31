@@ -14,9 +14,9 @@ There are no controls: it is a scripted attract-mode film.
 The program draws every frame itself (transform, clipping, lighting, polygon
 fill, sprites, particles, the HUD and the vector font) and writes raw frames
 to standard output. It also synthesises its own soundtrack: every video frame
-produces 735 samples of 16-bit mono audio, each one summed from the engines,
-the laser bursts and the explosions that are sounding at that instant. ffmpeg
-only encodes both streams.
+produces 735 samples of 16-bit mono audio. The track is weapons only — cannon
+reports and blast thumps, and silence everywhere else. No engines, no music,
+nothing under the picture. ffmpeg only encodes both streams.
 
 The whole film: [space.mp4](https://github.com/luckyseoul/SPACE.cob/releases/download/v1.0/space.mp4)
 (1280×896, 30 fps, 100 s, with sound, 9.7 MB). Or render it yourself in a
@@ -94,14 +94,23 @@ real time. Every run produces the same bytes.
   camera motion; the explosions flash the palette and shake the camera.
 - **Sound.** There is no mixer and no buffer. For every video frame the
   program synthesises 735 samples (22,050 Hz mono, 16-bit) and appends them to
-  the file named by `DEMO_AUDIO`; frames still go to standard output. Each
-  sample sums whatever is sounding at that instant: an engine drone while the
-  ships fly, a cockpit whine during the cockpit pass, a descending zap per
-  laser shot, a noise body over a falling sine per explosion, a hollow beating
-  bed under the aftermath, and a swell under the end card. Envelopes are
-  `FUNCTION EXP`, so the whole track is a pure function of the frame clock —
-  two renders produce the same bytes, which is what makes a two-pass mux
-  (audio first, then frames) stay in sync.
+  the file named by `DEMO_AUDIO`; frames still go to standard output. Only the
+  weapons sound: a cannon report per laser shot and a sub-bass thump per
+  explosion, with digital silence in between. Both are built low — the cannon
+  fundamental falls from 190 Hz to 90 Hz across a burst, the blast from 22 Hz —
+  and the accompanying noise is a one-pole low pass at roughly 70 Hz, so the
+  track measures 90-99% of its energy below 150 Hz with a dominant frequency
+  around 120 Hz.
+  - A falling pitch cannot be written as `SIN(t * f(t))`: expanding the
+    derivative gives an instantaneous frequency of `f + t*f'`, so a 190 Hz
+    tone that is *lowering* after 14 seconds lands at tens of kHz below zero
+    and aliases into hiss. The phase is integrated from each cue's onset
+    instead, `f0*(d - k*d*d/2)`.
+  - Clipping adds harmonics, so the mix is soft-limited at 0.72: a clipped
+    22 Hz sine measures as bright, which defeats the point of a low sound.
+  Envelopes are `FUNCTION EXP`, so the whole track is a pure function of the
+  frame clock — two renders produce the same bytes, which is what makes a
+  two-pass mux (audio first, then frames) stay in sync.
 - **Motion.** Ships fly Catmull–Rom splines through the keyframes in
   `script.dat`, read with `UNSTRING` and `FUNCTION NUMVAL`, and bank into
   their turns from the path's lateral acceleration. Paths are defined in a
