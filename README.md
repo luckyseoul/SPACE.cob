@@ -200,7 +200,7 @@ and the result measures as bright. The mix is soft-limited at 0.72 rather than
 
 ## Compiler notes
 
-Two yaccc defects turned up while making this, one fixed and one open.
+Two yaccc defects turned up while making this. Both are now fixed.
 
 **Division by an inexact intrinsic result — fixed.** `COMPUTE A = 1 /
 FUNCTION PI` used to yield 0, because `cob_d_div` scaled the dividend to 37
@@ -212,11 +212,14 @@ rounding divisors of more than 19 significant digits;
 `space.cob` still divides through a COMP-2 item rather than dividing by the
 function directly, so it also builds with older compilers.
 
-**`**` does not compile — open.** `COMPUTE X = 2.718 ** (-Y * 3)` generates
-`pow()` in the C and never emits `#include <math.h>`, so the build fails with
-an implicit-declaration error. The exponential envelopes here use
-`FUNCTION EXP` instead. Anything else raising a value to a computed power will
-hit it.
+**`**` did not compile with a floating-point receiver — fixed.** `COMPUTE X =
+2.718 ** (-Y * 3)` generated a bare `pow()` in the C, and `cobrt.h` keeps
+`<math.h>` out of generated programs, so the build failed with an
+implicit-declaration error. It now goes through `cob_dbl_pow()` in the runtime,
+which also matches `cobc` on `0 ** 0 = 1` and `0 ** -3 = 0`;
+`tests/cases/powfloat.cbl` in yaccc covers the path. The exponential envelopes
+here use `FUNCTION EXP` regardless, which is the clearer spelling for a decay,
+so the workaround stays.
 
 ## Credits
 
